@@ -30,5 +30,13 @@ export default defineConfig({
       }
     })
   ],
+  manifest: {
+    name: 'ReciPic',
+    short_name: 'ReciPic',
+    display: 'standalone',
+    start_url: '/',
+    background_color: '#ffffff',
+    theme_color: '#ffffff',
+  }
 	
 });
