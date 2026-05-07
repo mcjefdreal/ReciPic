@@ -1,19 +1,30 @@
 {
-	"name": "recipic",
-	"private": true,
-	"version": "0.0.1",
-	"type": "module",
-	"scripts": {
-		"dev": "vite dev",
-		"build": "vite build",
-		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''"
-	},
-	"devDependencies": {
-		"@sveltejs/adapter-auto": "^7.0.1",
-		"@sveltejs/kit": "^2.57.0",
-		"@sveltejs/vite-plugin-svelte": "^7.0.0",
-		"svelte": "^5.55.2",
-		"vite": "^8.0.7"
-	}
+    "name": "recipic",
+    "private": true,
+    "version": "0.0.1",
+    "type": "module",
+    "scripts": {
+        "dev": "vite dev",
+        "build": "vite build",
+        "preview": "vite preview",
+        "prepare": "svelte-kit sync || echo ''",
+        "db:generate": "drizzle-kit generate",
+        "db:migrate": "drizzle-kit migrate",
+        "db:push": "drizzle-kit push",
+        "db:studio": "drizzle-kit studio"
+    },
+    "devDependencies": {
+        "@sveltejs/adapter-auto": "^7.0.1",
+        "@sveltejs/kit": "^2.57.0",
+        "@sveltejs/vite-plugin-svelte": "^7.0.0",
+        "@types/better-sqlite3": "^7.6.13",
+        "dotenv": "^17.4.2",
+        "drizzle-kit": "^0.31.10",
+        "svelte": "^5.55.2",
+        "vite": "^8.0.7"
+    },
+    "dependencies": {
+        "better-sqlite3": "^12.9.0",
+        "drizzle-orm": "^0.45.2"
+    }
 }
