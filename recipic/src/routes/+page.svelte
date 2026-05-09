@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { tick } from 'svelte';
 
   let installed = $state(false);
 
@@ -7,6 +8,7 @@
   let file = $state<File | null>(null);
 
   let loading = $state(false);
+  let analyzing = $state(false);
 
   // Camera
   let showCamera = $state(false);
@@ -15,6 +17,13 @@
   let canvasElement: HTMLCanvasElement;
 
   let stream = $state<MediaStream | null>(null);
+
+
+  let detectedIngredients = $state<Array<{ id: string; name: string; quantity: number; unit: string }>>([]);
+  let showConfirmation = $state(false);
+  let savingToPantry = $state(false);
+  let pantrySaved = $state(false);
+
 
   let recipes = $state<
     {
@@ -54,7 +63,10 @@
 
     selectedImage = URL.createObjectURL(pickedFile);
 
-    console.log(selectedImage);
+    detectedIngredients = [];
+    showConfirmation = false;
+    pantrySaved = false;
+    recipes = [];
   }
 
   async function openCamera() {
@@ -115,21 +127,21 @@
       selectedImage = URL.createObjectURL(blob);
     }
 
+    detectedIngredients = [];
+    showConfirmation = false;
+    pantrySaved = false;
+    recipes = [];
+
     stopCamera();
   }
 
   async function analyzeIngredients() {
     if (!file) return;
 
-    loading = true;
-    recipes = [];
+    analyzing = true;
+    detectedIngredients = [];
 
     try {
-      // ============================
-      // Replace with your API call
-      // ============================
-
-      /*
       const formData = new FormData();
       formData.append('image', file);
 
@@ -138,12 +150,101 @@
         body: formData
       });
 
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || 'Analysis failed');
+      }
+
       const data = await res.json();
 
-      recipes = data.recipes;
-      */
+      // Convert API response to editable format
+      detectedIngredients = (data.ingredients || []).map((ing: { name: string; count: number }, i: number) => ({
+        id: `ing-${i}-${Date.now()}`,
+        name: ing.name,
+        quantity: ing.count || 1,
+        unit: 'piece'
+      }));
 
-      await new Promise((resolve) => setTimeout(resolve, 1800));
+      showConfirmation = true;
+    } catch (err) {
+      console.error('Analysis error:', err);
+      alert('Failed to analyze image. Please try again.');
+    } finally {
+      analyzing = false;
+    }
+  }
+
+  function updateQuantity(id: string, delta: number) {
+    detectedIngredients = detectedIngredients.map(ing =>
+      ing.id === id
+        ? { ...ing, quantity: Math.max(0.5, ing.quantity + delta) }
+        : ing
+    );
+  }
+
+  function updateName(id: string, newName: string) {
+    detectedIngredients = detectedIngredients.map(ing =>
+      ing.id === id ? { ...ing, name: newName } : ing
+    );
+  }
+
+  function removeIngredient(id: string) {
+    detectedIngredients = detectedIngredients.filter(ing => ing.id !== id);
+  }
+
+  function addNewIngredient() {
+    const newId = `ing-${Date.now()}`;
+    detectedIngredients = [...detectedIngredients, {
+      id: newId,
+      name: '',
+      quantity: 1,
+      unit: 'piece'
+    }];
+  }
+
+  async function saveToPantry() {
+    if (detectedIngredients.length === 0) return;
+
+    savingToPantry = true;
+
+    try {
+      const res = await fetch('/api/pantry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: detectedIngredients.map(ing => ({
+            name: ing.name || 'Unknown',
+            quantity: ing.quantity,
+            unit: ing.unit
+          }))
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Failed to save');
+      }
+
+      pantrySaved = true;
+      showConfirmation = false;
+
+      // Now fetch recipes based on pantry items
+      await findRecipes();
+    } catch (err) {
+      console.error('Save error:', err);
+      alert('Failed to save to pantry. Please try again.');
+    } finally {
+      savingToPantry = false;
+    }
+  }
+
+  async function findRecipes() {
+    loading = true;
+    recipes = [];
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+
+      const ingredientNames = detectedIngredients.map(i => i.name);
 
       recipes = [
         {
@@ -158,7 +259,25 @@
           difficulty: 'Easy',
           ingredients: ['Rice', 'Carrots', 'Eggs', 'Onion']
         }
-      ];
+      ].filter(r =>
+        r.ingredients.some(ing =>
+          ingredientNames.some(detected =>
+            ing.toLowerCase().includes(detected.toLowerCase()) ||
+            detected.toLowerCase().includes(ing.toLowerCase())
+          )
+        )
+      );
+
+      if (recipes.length === 0) {
+        recipes = [
+          {
+            title: 'Simple Stir Fry',
+            time: '15 mins',
+            difficulty: 'Easy',
+            ingredients: ingredientNames.slice(0, 4)
+          }
+        ];
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -166,7 +285,14 @@
     }
   }
 
-  import { tick } from 'svelte';
+  function resetAll() {
+    selectedImage = null;
+    file = null;
+    detectedIngredients = [];
+    showConfirmation = false;
+    pantrySaved = false;
+    recipes = [];
+  }
 </script>
 
 <svelte:head>
@@ -228,11 +354,7 @@
 
           <button
             class="remove-btn"
-            onclick={() => {
-              selectedImage = null;
-              file = null;
-              recipes = [];
-            }}
+            onclick={resetAll}
           >
             ✕
           </button>
@@ -270,19 +392,115 @@
       </div>
     {/if}
 
-    <button
-      class="analyze-btn"
-      onclick={analyzeIngredients}
-      disabled={!file || loading}
-    >
-      {#if loading}
-        <div class="spinner"></div>
-        Analyzing...
-      {:else}
-        Find Recipes
-      {/if}
-    </button>
+    {#if !showConfirmation && !pantrySaved}
+      <button
+        class="analyze-btn"
+        onclick={analyzeIngredients}
+        disabled={!file || analyzing}
+      >
+        {#if analyzing}
+          <div class="spinner"></div>
+          Analyzing...
+        {:else}
+          🔍 Detect Ingredients
+        {/if}
+      </button>
+    {/if}
   </section>
+
+  <!-- INGREDIENT CONFIRMATION SCREEN -->
+  {#if showConfirmation}
+    <section class="confirmation-card">
+      <div class="confirmation-header">
+        <h2>Confirm Ingredients</h2>
+        <p>Review and adjust detected items</p>
+      </div>
+
+      <div class="ingredients-list">
+        {#each detectedIngredients as ingredient (ingredient.id)}
+          <div class="ingredient-item">
+            <div class="ingredient-info">
+              <input
+                type="text"
+                class="ingredient-name-input"
+                value={ingredient.name}
+                oninput={(e) => updateName(ingredient.id, e.currentTarget.value)}
+                placeholder="Ingredient name"
+              />
+            </div>
+
+            <div class="quantity-controls">
+              <button
+                class="qty-btn"
+                onclick={() => updateQuantity(ingredient.id, -1)}
+                aria-label="Decrease quantity"
+              >
+                −
+              </button>
+
+              <span class="quantity-value">
+                {ingredient.quantity}
+              </span>
+
+              <button
+                class="qty-btn"
+                onclick={() => updateQuantity(ingredient.id, 1)}
+                aria-label="Increase quantity"
+              >
+                +
+              </button>
+            </div>
+
+            <button
+              class="delete-btn"
+              onclick={() => removeIngredient(ingredient.id)}
+              aria-label="Remove ingredient"
+            >
+              🗑️
+            </button>
+          </div>
+        {/each}
+      </div>
+
+      <button
+        class="add-ingredient-btn"
+        onclick={addNewIngredient}
+      >
+        + Add Ingredient
+      </button>
+
+      <div class="confirmation-actions">
+        <button
+          class="secondary-btn"
+          onclick={() => showConfirmation = false}
+        >
+          Cancel
+        </button>
+
+        <button
+          class="save-btn"
+          onclick={saveToPantry}
+          disabled={detectedIngredients.length === 0 || savingToPantry}
+        >
+          {#if savingToPantry}
+            <div class="spinner white"></div>
+            Saving...
+          {:else}
+            💾 Save to Pantry
+          {/if}
+        </button>
+      </div>
+    </section>
+  {/if}
+
+  <!-- PANTRY SAVED MESSAGE -->
+  {#if pantrySaved}
+    <section class="success-card">
+      <div class="success-icon">✅</div>
+      <h3>Saved to Pantry!</h3>
+      <p>Your ingredients have been added to your pantry.</p>
+    </section>
+  {/if}
 
 
   {#if recipes.length > 0}
@@ -410,7 +628,9 @@
 
   .hero,
   .upload-card,
-  .results {
+  .results,
+  .confirmation-card,
+  .success-card {
     position: relative;
     z-index: 2;
   }
@@ -463,8 +683,6 @@
     font-size: 0.9rem;
   }
 
-/* ADD / REPLACE THESE STYLES */
-
 .upload-actions {
   display: flex;
   gap: 0.8rem;
@@ -505,7 +723,6 @@
   overflow: hidden;
 }
 
-
 .gallery-btn input,
 .upload-new input {
   position: absolute;
@@ -513,8 +730,6 @@
   opacity: 0;
   cursor: pointer;
 }
-
-/* PREVIEW SECTION */
 
 .preview-section {
   margin-top: 1rem;
@@ -544,9 +759,9 @@
 }
 
 .preview-container {
-  overflow: hidden;
-  border-radius: 24px;
-  border: 1px solid rgba(255,255,255,0.08);
+overflow: hidden;
+border-radius: 24px;
+border: 1px solid rgba(255,255,255,0.08);
 }
 
 .preview-image {
@@ -555,8 +770,6 @@
   object-fit: cover;
   display: block;
 }
-
-/* RETAKE BUTTONS */
 
 .replace-actions {
   display: flex;
@@ -580,6 +793,7 @@
   position: relative;
   overflow: hidden;
 }
+
   .analyze-btn {
     width: 100%;
     margin-top: 1rem;
@@ -610,10 +824,197 @@
     animation: spin 0.8s linear infinite;
   }
 
+  .spinner.white {
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top: 2px solid white;
+  }
+
   @keyframes spin {
     to {
       transform: rotate(360deg);
     }
+  }
+
+  /* CONFIRMATION CARD */
+  .confirmation-card {
+    background: rgba(255,255,255,0.08);
+    border-radius: 28px;
+    padding: 1.2rem;
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.08);
+    margin-top: 1rem;
+  }
+
+  .confirmation-header h2 {
+    margin: 0;
+    font-size: 1.3rem;
+  }
+
+  .confirmation-header p {
+    color: rgba(255,255,255,0.6);
+    margin-top: 0.3rem;
+    font-size: 0.9rem;
+  }
+
+  .ingredients-list {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .ingredient-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: rgba(0,0,0,0.2);
+    padding: 0.7rem 0.9rem;
+    border-radius: 16px;
+  }
+
+  .ingredient-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ingredient-name-input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: white;
+    font-size: 0.95rem;
+    padding: 0.3rem 0;
+    outline: none;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .ingredient-name-input:focus {
+    border-bottom-color: #4ade80;
+  }
+
+  .ingredient-name-input::placeholder {
+    color: rgba(255,255,255,0.4);
+  }
+
+  .quantity-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 0.3rem;
+  }
+
+  .qty-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    border: none;
+    background: rgba(255,255,255,0.1);
+    color: white;
+    font-size: 1.2rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  .qty-btn:hover {
+    background: rgba(255,255,255,0.2);
+  }
+
+  .quantity-value {
+    min-width: 32px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .delete-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    border: none;
+    background: rgba(239,68,68,0.2);
+    cursor: pointer;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .delete-btn:hover {
+    background: rgba(239,68,68,0.3);
+  }
+
+  .add-ingredient-btn {
+    width: 100%;
+    margin-top: 0.8rem;
+    padding: 0.8rem;
+    border: 1px dashed rgba(255,255,255,0.3);
+    border-radius: 14px;
+    background: transparent;
+    color: rgba(255,255,255,0.8);
+    font-size: 0.9rem;
+    cursor: pointer;
+  }
+
+  .add-ingredient-btn:hover {
+    border-color: rgba(255,255,255,0.5);
+    background: rgba(255,255,255,0.05);
+  }
+
+  .confirmation-actions {
+    display: flex;
+    gap: 0.8rem;
+    margin-top: 1rem;
+  }
+
+  .save-btn {
+    flex: 1;
+    border: none;
+    border-radius: 16px;
+    padding: 1rem;
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+    color: white;
+    font-weight: 700;
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .save-btn:disabled {
+    opacity: 0.5;
+  }
+
+  /* SUCCESS CARD */
+  .success-card {
+    background: rgba(34,197,94,0.15);
+    border-radius: 28px;
+    padding: 1.5rem;
+    border: 1px solid rgba(34,197,94,0.3);
+    margin-top: 1rem;
+    text-align: center;
+  }
+
+  .success-icon {
+    font-size: 3rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .success-card h3 {
+    margin: 0;
+    font-size: 1.2rem;
+  }
+
+  .success-card p {
+    margin: 0.5rem 0 0;
+    color: rgba(255,255,255,0.7);
+    font-size: 0.9rem;
   }
 
   .results {
