@@ -30,8 +30,11 @@
       description: string | null;
       ingredients: string | null;
       instructions: string | null;
+      link?: string | null;
       matchCount: number;
       matches: string[];
+      score?: number;
+      reasoning?: string;
     }[]
   >([]);
 
@@ -261,6 +264,16 @@
     }
   }
 
+  let expandedRecipe = $state<number | null>(null);
+
+  function viewRecipe(recipe: typeof recipes[number]) {
+    if (recipe.link) {
+      window.open(recipe.link, '_blank');
+    } else {
+      expandedRecipe = expandedRecipe === recipe.id ? null : recipe.id;
+    }
+  }
+
   import { tick } from 'svelte';
 </script>
 
@@ -452,8 +465,18 @@
               <h3>{recipe.name}</h3>
 
               <div class="recipe-meta">
-                <span>{recipe.matchCount} ingredient{recipe.matchCount === 1 ? '' : 's'} matched</span>
+                {#if recipe.score !== undefined}
+                  <span class="score-badge">
+                    🎯 {Math.round(recipe.score * 100)}% match
+                  </span>
+                {:else}
+                  <span>{recipe.matchCount} ingredient{recipe.matchCount === 1 ? '' : 's'} matched</span>
+                {/if}
               </div>
+
+              {#if recipe.reasoning}
+                <p class="recipe-reasoning">{recipe.reasoning}</p>
+              {/if}
 
               {#if recipe.matches.length > 0}
                 <div class="ingredients">
@@ -469,9 +492,22 @@
                 <p class="recipe-desc">{recipe.description}</p>
               {/if}
 
-              <button class="view-btn">
-                View Recipe
+              <button class="view-btn" onclick={() => viewRecipe(recipe)}>
+                {recipe.link ? '🔗 Open Recipe Link' : (expandedRecipe === recipe.id ? 'Hide Details' : 'View Details')}
               </button>
+
+              {#if expandedRecipe === recipe.id}
+                <div class="recipe-details">
+                  {#if recipe.ingredients}
+                    <h4>Ingredients</h4>
+                    <p class="recipe-desc">{recipe.ingredients}</p>
+                  {/if}
+                  {#if recipe.instructions}
+                    <h4>Instructions</h4>
+                    <p class="recipe-desc">{recipe.instructions}</p>
+                  {/if}
+                </div>
+              {/if}
             </div>
           </div>
         {/each}
@@ -922,6 +958,23 @@
     font-size: 0.85rem;
   }
 
+  .score-badge {
+    background: rgba(34,197,94,0.2);
+    color: #86efac;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+
+  .recipe-reasoning {
+    margin: 0.5rem 0 0;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.8rem;
+    font-style: italic;
+    line-height: 1.4;
+  }
+
   .recipe-desc {
     margin: 0.5rem 0 0;
     color: rgba(255,255,255,0.6);
@@ -938,6 +991,18 @@
     background: rgba(255,255,255,0.08);
     color: white;
     cursor: pointer;
+  }
+
+  .recipe-details {
+    margin-top: 0.8rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .recipe-details h4 {
+    margin: 0.5rem 0 0.3rem;
+    font-size: 0.85rem;
+    color: rgba(255,255,255,0.5);
   }
 
   /* CAMERA MODAL */

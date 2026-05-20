@@ -6,6 +6,10 @@ export const recipes = sqliteTable("recipes", {
     description: text("description"),
     ingredients: text("ingredients"),
     instructions: text("instructions"),
+    link: text("link"),
+    source: text("source"),
+    site: text("site"),
+    ner: text("ner"),
     createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(
         () => new Date(),
     ),
@@ -27,5 +31,10 @@ export const pantry = sqliteTable("pantry", {
     name: text("name").notNull(),
     quantity: integer("quantity").notNull().default(1),
     unit: text("unit"),
-    addedAt: integer("added_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
+    category: text("category"),
+    notes: text("notes"),
+    dateAdded: integer("date_added", { mode: "timestamp" }),
+    dateExpires: integer("date_expires", { mode: "timestamp" }),
+    imageUrl: text("image_url"),
+    isAvailable: integer("is_available", { mode: "boolean" }).default(true),
 });
