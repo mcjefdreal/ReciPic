@@ -13,8 +13,27 @@
   let detectedIngredients = $state<{ name: string; count: number }[]>([]);
 
   // Pantry loaded from DB
-  let pantryItems = $state<{ id: number; name: string; quantity: number; unit: string | null }[]>([]);
+  let pantryItems = $state<{ id: number; name: string; quantity: number; unit: string | null; category: string | null }[]>([]);
 
+  let showPantry = $state(false);
+  let pantrySearch = $state('');
+
+  // Grouped and filtered pantry for modal
+  let pantryGroups = $derived.by(() => {
+    const q = pantrySearch.toLowerCase();
+    const filtered = q
+      ? pantryItems.filter(i => i.name.toLowerCase().includes(q))
+      : pantryItems;
+    const groups: Record<string, typeof filtered> = {};
+    for (const item of filtered) {
+      const cat = item.category || 'Uncategorized';
+      (groups[cat] ??= []).push(item);
+    }
+    for (const key of Object.keys(groups)) {
+      groups[key].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return groups;
+  });
   // Camera
   let showCamera = $state(false);
 
@@ -411,31 +430,13 @@
     {/if}
   </section>
 
-  <!-- PANTRY -->
-  {#if pantryItems.length > 0}
-    <section class="pantry-section">
-      <div class="pantry-header">
-        <h2>Your Pantry</h2>
-        <div class="pantry-actions">
-          <span>{pantryItems.length} items</span>
-          <button class="clear-btn" onclick={clearPantry}>Clear</button>
-        </div>
-      </div>
-
-      <div class="ingredients">
-        {#each pantryItems as item}
-          <div class="ingredient-pill pantry-pill">
-            {item.name} {#if item.quantity > 1}×{item.quantity}{/if}
-            <button class="pill-remove" onclick={() => removePantryItem(item.id)}>✕</button>
-          </div>
-        {/each}
-      </div>
-
-      <button
-        class="analyze-btn find-btn"
-        onclick={findRecipes}
-        disabled={recipeLoading}
-      >
+  <!-- post-scan stuff -->
+  {#if analysisStep === 'saved' && pantryItems.length > 0}
+    <section class="actions-section">
+      <button class="analyze-btn" onclick={() => showPantry = true}>
+        🧺 View Pantry ({pantryItems.length})
+      </button>
+      <button class="analyze-btn find-btn" onclick={findRecipes} disabled={recipeLoading}>
         {#if recipeLoading}
           <div class="spinner"></div>
           Searching...
@@ -548,6 +549,60 @@
           >
             Capture
           </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- PANTRY MODAL -->
+  {#if showPantry}
+    <div class="pantry-modal">
+      <div class="pantry-modal-content">
+        <div class="pantry-modal-header">
+          <div class="pantry-modal-title">
+            <h2>🧺 Pantry</h2>
+            <span class="count-badge">{pantryItems.length}</span>
+          </div>
+          <button class="modal-close" onclick={() => showPantry = false}>✕</button>
+        </div>
+
+        <div class="pantry-search-wrap">
+          <input class="pantry-search" type="text" placeholder="Search ingredients..." bind:value={pantrySearch} />
+        </div>
+
+        {#if pantryItems.length === 0}
+          <div class="pantry-empty">
+            <p>Your pantry is empty.</p>
+            <p>Scan ingredients to get started.</p>
+          </div>
+        {:else}
+          <div class="pantry-scroll">
+            {#each Object.entries(pantryGroups) as [category, items]}
+              <div class="pantry-group">
+                <h3 class="pantry-group-title">{category}</h3>
+                {#each items as item}
+                  <div class="pantry-row">
+                    <div class="pantry-row-info">
+                      <span class="pantry-row-name">{item.name}</span>
+                      <span class="pantry-row-qty">
+                        {item.quantity}{#if item.unit} {item.unit}{/if}
+                      </span>
+                    </div>
+                    <button class="pantry-row-remove" onclick={() => removePantryItem(item.id)}>✕</button>
+                  </div>
+                {/each}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="pantry-modal-footer">
+          {#if pantryItems.length > 0}
+            <button class="secondary-btn clear-all-btn" onclick={() => { clearPantry(); pantrySearch = ''; }}>Clear All</button>
+            <button class="analyze-btn find-btn" onclick={() => { showPantry = false; findRecipes(); }}>
+              🍳 Find Recipes
+            </button>
+          {/if}
         </div>
       </div>
     </div>
@@ -1064,5 +1119,187 @@
       max-width: 500px;
       margin: 0 auto;
     }
+  }
+
+  .pantry-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 999;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+  }
+
+  .pantry-modal-content {
+    background: #1a1f2e;
+    border-radius: 28px 28px 0 0;
+    width: 100%;
+    max-width: 500px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .pantry-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.5rem 1.2rem 0.5rem;
+  }
+
+  .pantry-modal-title {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .pantry-modal-title h2 {
+    margin: 0;
+    font-size: 1.3rem;
+  }
+
+  .count-badge {
+    background: rgba(34,197,94,0.2);
+    color: #86efac;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .modal-close {
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    color: white;
+    cursor: pointer;
+    font-size: 1rem;
+  }
+
+  .pantry-search-wrap {
+    padding: 0.5rem 1.2rem;
+  }
+
+  .pantry-search {
+    width: 100%;
+    padding: 0.7rem 1rem;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px;
+    background: rgba(255,255,255,0.06);
+    color: white;
+    font-size: 0.9rem;
+    outline: none;
+    box-sizing: border-box;
+  }
+
+  .pantry-search::placeholder {
+    color: rgba(255,255,255,0.3);
+  }
+
+  .pantry-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 1.2rem;
+  }
+
+  .pantry-group {
+    margin-bottom: 1rem;
+  }
+
+  .pantry-group-title {
+    margin: 0.5rem 0;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.4);
+  }
+
+  .pantry-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.7rem 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+
+  .pantry-row:last-child {
+    border-bottom: none;
+  }
+
+  .pantry-row-info {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+  }
+
+  .pantry-row-name {
+    font-size: 0.95rem;
+    font-weight: 500;
+    text-transform: capitalize;
+  }
+
+  .pantry-row-qty {
+    font-size: 0.8rem;
+    color: rgba(255,255,255,0.5);
+    background: rgba(255,255,255,0.06);
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+  }
+
+  .pantry-row-remove {
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 999px;
+    background: rgba(239,68,68,0.15);
+    color: #fca5a5;
+    cursor: pointer;
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .pantry-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: rgba(255,255,255,0.5);
+  }
+
+  .pantry-empty p {
+    margin: 0.3rem 0;
+  }
+
+  .pantry-modal-footer {
+    display: flex;
+    gap: 0.8rem;
+    padding: 1rem 1.2rem 1.5rem;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .pantry-modal-footer .find-btn {
+    flex: 1;
+    margin: 0;
+  }
+
+  .clear-all-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* POST-SCAN ACTIONS */
+  .actions-section {
+    display: flex;
+    gap: 0.8rem;
+    margin-top: 1.5rem;
+  }
+
+  .actions-section .analyze-btn {
+    flex: 1;
+    margin: 0;
   }
 </style>
