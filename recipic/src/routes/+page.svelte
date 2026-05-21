@@ -658,7 +658,6 @@
 
   .hero,
   .upload-card,
-  .pantry-section,
   .results {
     position: relative;
     z-index: 2;
@@ -879,45 +878,6 @@
     color: rgba(255,255,255,0.7);
   }
 
-  .pantry-section {
-    margin-top: 1.5rem;
-    background: rgba(255,255,255,0.08);
-    border-radius: 28px;
-    padding: 1rem;
-    backdrop-filter: blur(20px);
-    border: 1px solid rgba(255,255,255,0.08);
-  }
-
-  .pantry-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.8rem;
-  }
-
-  .pantry-header h2 {
-    margin: 0;
-    font-size: 1.1rem;
-  }
-
-  .pantry-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    font-size: 0.85rem;
-    color: rgba(255,255,255,0.6);
-  }
-
-  .clear-btn {
-    background: rgba(239,68,68,0.2);
-    color: #fca5a5;
-    border: none;
-    border-radius: 999px;
-    padding: 0.35rem 0.7rem;
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-
   .ingredients {
     display: flex;
     flex-wrap: wrap;
@@ -933,25 +893,6 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-  }
-
-  .pantry-pill {
-    background: rgba(34,197,94,0.15);
-    color: #86efac;
-  }
-
-  .pill-remove {
-    background: none;
-    border: none;
-    color: rgba(255,255,255,0.5);
-    cursor: pointer;
-    font-size: 0.75rem;
-    padding: 0;
-    margin-left: 0.2rem;
-  }
-
-  .pill-remove:hover {
-    color: #ef4444;
   }
 
   .matched {
@@ -1291,7 +1232,6 @@
     white-space: nowrap;
   }
 
-  /* POST-SCAN ACTIONS */
   .actions-section {
     display: flex;
     gap: 0.8rem;
