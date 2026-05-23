@@ -16,6 +16,7 @@
   let pantryItems = $state<{ id: number; name: string; quantity: number; unit: string | null; category: string | null }[]>([]);
 
   let showPantry = $state(false);
+  let showRecipes = $state(false);
   let pantrySearch = $state('');
 
   // Grouped and filtered pantry for modal
@@ -49,6 +50,7 @@
       description: string | null;
       ingredients: string | null;
       instructions: string | null;
+      ingredientCount?: number;
       link?: string | null;
       matchCount: number;
       matches: string[];
@@ -285,12 +287,14 @@
 
   let expandedRecipe = $state<number | null>(null);
 
-  function viewRecipe(recipe: typeof recipes[number]) {
-    if (recipe.link) {
-      window.open(recipe.link, '_blank');
-    } else {
-      expandedRecipe = expandedRecipe === recipe.id ? null : recipe.id;
-    }
+  function toggleDetails(recipe: typeof recipes[number]) {
+    expandedRecipe = expandedRecipe === recipe.id ? null : recipe.id;
+  }
+
+  function openLink(link: string | null | undefined) {
+    if (!link) return;
+    const url = link.startsWith('http') ? link : `https://${link}`;
+    window.open(url, '_blank');
   }
 
   import { tick } from 'svelte';
@@ -320,6 +324,21 @@
     <p>
       Turn your Pantry into a Recipe
     </p>
+
+    {#if pantryItems.length > 0 || recipes.length > 0}
+      <div class="hero-actions">
+        {#if pantryItems.length > 0}
+          <button class="hero-btn" onclick={() => showPantry = true}>
+            🧺 Pantry ({pantryItems.length})
+          </button>
+        {/if}
+        {#if recipes.length > 0}
+          <button class="hero-btn" onclick={() => showRecipes = true}>
+            🍳 Recipes ({recipes.length})
+          </button>
+        {/if}
+      </div>
+    {/if}
   </header>
 
   <section class="upload-card">
@@ -473,6 +492,14 @@
                 {:else}
                   <span>{recipe.matchCount} ingredient{recipe.matchCount === 1 ? '' : 's'} matched</span>
                 {/if}
+                {#if recipe.ingredientCount !== undefined}
+                  <span class="ingredient-count">🧂 {recipe.ingredientCount} total</span>
+                {/if}
+                {#if recipe.link}
+                  <button class="link-btn" onclick={() => openLink(recipe.link)} title="Open recipe source">
+                    🔗
+                  </button>
+                {/if}
               </div>
 
               {#if recipe.reasoning}
@@ -493,19 +520,23 @@
                 <p class="recipe-desc">{recipe.description}</p>
               {/if}
 
-              <button class="view-btn" onclick={() => viewRecipe(recipe)}>
-                {recipe.link ? '🔗 Open Recipe Link' : (expandedRecipe === recipe.id ? 'Hide Details' : 'View Details')}
+              <button class="view-btn" onclick={() => toggleDetails(recipe)}>
+                {expandedRecipe === recipe.id ? 'Hide Details' : 'View Details'}
               </button>
 
               {#if expandedRecipe === recipe.id}
                 <div class="recipe-details">
                   {#if recipe.ingredients}
-                    <h4>Ingredients</h4>
+                    <h4>Ingredients ({recipe.ingredientCount || recipe.ingredients.split(',').length})</h4>
                     <p class="recipe-desc">{recipe.ingredients}</p>
+                  {:else}
+                    <p class="recipe-desc">No ingredients listed.</p>
                   {/if}
                   {#if recipe.instructions}
                     <h4>Instructions</h4>
                     <p class="recipe-desc">{recipe.instructions}</p>
+                  {:else}
+                    <p class="recipe-desc">No instructions listed.</p>
                   {/if}
                 </div>
               {/if}
@@ -607,6 +638,80 @@
       </div>
     </div>
   {/if}
+
+  <!-- RECIPES MODAL -->
+  {#if showRecipes}
+    <div class="pantry-modal">
+      <div class="pantry-modal-content">
+        <div class="pantry-modal-header">
+          <div class="pantry-modal-title">
+            <h2>🍳 Recipes</h2>
+            <span class="count-badge">{recipes.length}</span>
+          </div>
+          <button class="modal-close" onclick={() => showRecipes = false}>✕</button>
+        </div>
+
+        <div class="pantry-scroll">
+          {#if recipes.length === 0}
+            <div class="pantry-empty">
+              <p>No recipes yet.</p>
+              <p>Add pantry items and find recipes to get started.</p>
+            </div>
+          {:else}
+            <div class="recipe-list modal-recipe-list">
+              {#each recipes as recipe}
+                <div class="recipe-card">
+                  <div class="recipe-image">🍽️</div>
+                  <div class="recipe-content">
+                    <h3>{recipe.name}</h3>
+                    <div class="recipe-meta">
+                      {#if recipe.score !== undefined}
+                        <span class="score-badge">🎯 {Math.round(recipe.score * 100)}% match</span>
+                      {:else}
+                        <span>{recipe.matchCount} matched</span>
+                      {/if}
+                      {#if recipe.ingredientCount !== undefined}
+                        <span class="ingredient-count">🧂 {recipe.ingredientCount} total</span>
+                      {/if}
+                      {#if recipe.link}
+                        <button class="link-btn" onclick={() => openLink(recipe.link)} title="Open recipe source">🔗</button>
+                      {/if}
+                    </div>
+                    {#if recipe.reasoning}
+                      <p class="recipe-reasoning">{recipe.reasoning}</p>
+                    {/if}
+                    <button class="view-btn" onclick={() => toggleDetails(recipe)}>
+                      {expandedRecipe === recipe.id ? 'Hide Details' : 'View Details'}
+                    </button>
+                    {#if expandedRecipe === recipe.id}
+                      <div class="recipe-details">
+                        {#if recipe.ingredients}
+                          <h4>Ingredients ({recipe.ingredientCount || recipe.ingredients.split(',').length})</h4>
+                          <p class="recipe-desc">{recipe.ingredients}</p>
+                        {:else}
+                          <p class="recipe-desc">No ingredients listed.</p>
+                        {/if}
+                        {#if recipe.instructions}
+                          <h4>Instructions</h4>
+                          <p class="recipe-desc">{recipe.instructions}</p>
+                        {:else}
+                          <p class="recipe-desc">No instructions listed.</p>
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div class="pantry-modal-footer">
+          <button class="secondary-btn" onclick={() => showRecipes = false}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -691,6 +796,31 @@
     margin-top: 1rem;
     color: rgba(255,255,255,0.7);
     max-width: 320px;
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 0.8rem;
+    margin-top: 1.2rem;
+    flex-wrap: wrap;
+  }
+
+  .hero-btn {
+    padding: 0.6rem 1.2rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.08);
+    color: white;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    backdrop-filter: blur(10px);
+  }
+
+  .hero-btn:hover {
+    background: rgba(255,255,255,0.15);
+    border-color: rgba(255,255,255,0.3);
   }
 
   .upload-card {
@@ -921,6 +1051,11 @@
     flex-direction: column;
     gap: 1rem;
     padding-bottom: 4rem;
+  }
+
+  .modal-recipe-list {
+    padding-bottom: 1rem;
+    padding-top: 0.5rem;
   }
 
   .recipe-card {
