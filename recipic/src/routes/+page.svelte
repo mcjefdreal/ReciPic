@@ -1068,7 +1068,7 @@
     background: rgba(0,0,0,0.85);
     z-index: 999;
     display: flex;
-    align-items: flex-end;
+    align-items: anchor-center;
     justify-content: center;
   }
 
@@ -1145,6 +1145,7 @@
     flex: 1;
     overflow-y: auto;
     padding: 0 1.2rem;
+    max-height: 500px;
   }
 
   .pantry-group {
