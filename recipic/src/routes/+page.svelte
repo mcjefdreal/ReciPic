@@ -605,24 +605,24 @@
             {#each Object.entries(pantryGroups) as [category, items]}
               <div class="pantry-group">
                 <h3 class="pantry-group-title">{category}</h3>
-                {#each items as item, index}
+                {#each items as item}
                   <div class="pantry-row">
                     <div class="pantry-row-info">
-                      <input type="text" class="pantry-row-name" bind:value={item.name} placeholder="Ingredient Name">
-                      <!-- <span class="pantry-row-name">{item.name}</span> -->
-                       <div class="qty-controls">
-                          <button class="qty-btn" onclick={() => decreaseQuantity(index)}>-</button>
+                      <!-- <input type="text" class="pantry-row-name" bind:value={item.name} placeholder="Ingredient Name"> -->
+                      <span class="pantry-row-name">{item.name}</span>
+                       <!-- <div class="qty-controls"> -->
+                          <!-- <button class="qty-btn" onclick={() => decreaseQuantity(index)}>-</button> -->
                           <span class="pantry-row-qty">
                             {item.quantity}{#if item.unit} {item.unit}{/if}
                           </span>
-                          <button class="qty-btn" onclick={() => increaseQuantity(index)}>+</button>
-                       </div>
+                          <!-- <button class="qty-btn" onclick={() => increaseQuantity(index)}>+</button> -->
+                       <!-- </div> -->
                       
                     </div>
                     <button class="pantry-row-remove" onclick={() => removePantryItem(item.id)}>✕</button>
                   </div>
                 {/each}
-                <button class="add-row-btn" onclick={addIngredientRow}>+ Add Ingredient</button>
+                <!-- <button class="add-row-btn" onclick={addIngredientRow}>+ Add Ingredient</button> -->
               </div>
             {/each}
           </div>
