@@ -1,50 +1,73 @@
 import { json, error } from '@sveltejs/kit';
 import { db } from '$lib/db';
 import { pantry } from '$lib/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 export async function GET() {
 	const items = db.select().from(pantry).all();
+	console.log(items);
 	return json(items);
 }
 
+
 export async function POST({ request }) {
 	const body = await request.json();
+
 	const items = body.items;
-	if (!Array.isArray(items)) error(400, 'Expected items array');
 
-	const inserted: typeof pantry.$inferSelect[] = [];
+	if (!Array.isArray(items)) {error(400, 'Expected items array');}
+
+	// Get existing DB pantry items
+	const existingItems = db.select().from(pantry).all();
+
+	const existingIds = existingItems.map((item) => item.id);
+
+	// IDs coming from frontend
+	const incomingIds = items
+		.filter((item) => item.id > 0)
+		.map((item) => item.id);
+
+	// Delete removed items
+	const idsToDelete = existingIds.filter((id) => !incomingIds.includes(id));
+
+	if (idsToDelete.length > 0) {
+		db.delete(pantry)
+			.where(inArray(pantry.id, idsToDelete))
+			.run();
+	}
+
+	// Upsert items
 	for (const item of items) {
-		if (!item.name) continue;
-		const name = String(item.name).trim().toLowerCase();
-		const quantity = Number(item.quantity) || 1;
-		const unit = item.unit ? String(item.unit) : null;
+		if (!item.name?.trim()) continue;
 
-		// Upsert: if same name exists, update quantity; otherwise insert.
-		const existing = db
-			.select()
-			.from(pantry)
-			.where(sql`lower(${pantry.name}) = ${name}`)
-			.get();
+		const cleanItem = {
+			name: String(item.name).trim(),
+			quantity: Number(item.quantity) || 1,
+			unit: item.unit ? String(item.unit) : null,
+			category: item.category ? String(item.category) : null
+		};
 
-		if (existing) {
-			const updated = db
-				.update(pantry)
-				.set({ quantity: existing.quantity + quantity, unit: unit ?? existing.unit })
-				.where(eq(pantry.id, existing.id))
-				.returning()
-				.get();
-			inserted.push(updated);
-		} else {
-			const created = db
-				.insert(pantry)
-				.values({ name: String(item.name).trim(), quantity, unit })
-				.returning()
-				.get();
-			inserted.push(created);
+		// Existing DB row
+		if (item.id > 0) {
+			db.update(pantry)
+				.set(cleanItem)
+				.where(eq(pantry.id, item.id))
+				.run();
+		}
+
+		// New row
+		else {
+			const created = db.insert(pantry)
+				.values(cleanItem)
+				.run();
+			// console.log(created);
 		}
 	}
-	return json(inserted, { status: 201 });
+
+	// Return fresh pantry
+	const updatedPantry = db.select().from(pantry).all();
+
+	return json(updatedPantry);
 }
 
 export async function DELETE({ request }) {

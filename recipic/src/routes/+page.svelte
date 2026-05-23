@@ -17,6 +17,7 @@
 
   let showPantry = $state(false);
   let pantrySearch = $state('');
+  let pantryLoading = $state(false);
 
   // Grouped and filtered pantry for modal
   let pantryGroups = $derived.by(() => {
@@ -77,7 +78,7 @@
     try {
       const res = await fetch('/api/pantry');
       if (res.ok) {
-        pantryItems = await res.json();
+        pantryItems = [...await res.json()];
       }
     } catch (err) {
       console.error('Failed to load pantry:', err);
@@ -293,18 +294,24 @@
     }
   }
 
-  function increaseQuantity(index: number) {
-    pantryItems[index].quantity += 1;
-    pantryItems = [...pantryItems];
+  function increaseQuantity(id: number) {
+    pantryItems = pantryItems.map(item =>
+      item.id === id
+        ? { ...item, quantity: item.quantity + 1 }
+        : item
+    );
   }
 
-  function decreaseQuantity(index: number) {
-    if (pantryItems[index].quantity > 1) {
-      pantryItems[index].quantity -= 1;
-      pantryItems = [...pantryItems];
-    }
+  function decreaseQuantity(id: number) {
+    pantryItems = pantryItems.map(item =>
+      item.id === id
+        ? {
+            ...item,
+            quantity: Math.max(1, item.quantity - 1)
+          }
+        : item
+    );
   }
-
   function addIngredientRow() {
     pantryItems = [
       ...pantryItems,
@@ -313,9 +320,54 @@
         name: '',
         quantity: 1,
         unit: null,
-        category: null
+        category: 'Uncategorized'
       }
     ];
+  }
+
+  async function openPantry() {
+    showPantry = true;
+    pantryLoading = true;
+
+    try {
+      const response = await fetch('/api/pantry');
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch pantry');
+      }
+
+      const data = await response.json();
+      pantryItems = [...data];
+
+    } catch (err) {
+      console.error(err);
+    } finally {
+      pantryLoading = false;
+    }
+  }
+
+  async function savePantryChanges() {
+    try {
+      const response = await fetch('/api/pantry', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          items: pantryItems
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save pantry');
+      }
+
+      pantryItems = [...await response.json()];
+
+      console.log('Pantry saved');
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   import { tick } from 'svelte';
@@ -371,6 +423,9 @@
         </label>
       </div>
     {/if}
+    <button class="view-pantry-btn" onclick={openPantry}>
+      🧺 View Pantry
+    </button>
 
     <!-- IMAGE PREVIEW -->
     {#if selectedImage}
@@ -602,35 +657,70 @@
           </div>
         {:else}
           <div class="pantry-scroll">
-            {#each Object.entries(pantryGroups) as [category, items]}
+            {#each Object.entries(pantryGroups) as [category, items] (category)}
               <div class="pantry-group">
                 <h3 class="pantry-group-title">{category}</h3>
-                {#each items as item}
+                {#each items as item (item.id)}
                   <div class="pantry-row">
-                    <div class="pantry-row-info">
-                      <!-- <input type="text" class="pantry-row-name" bind:value={item.name} placeholder="Ingredient Name"> -->
-                      <span class="pantry-row-name">{item.name}</span>
-                       <!-- <div class="qty-controls"> -->
-                          <!-- <button class="qty-btn" onclick={() => decreaseQuantity(index)}>-</button> -->
-                          <span class="pantry-row-qty">
-                            {item.quantity}{#if item.unit} {item.unit}{/if}
-                          </span>
-                          <!-- <button class="qty-btn" onclick={() => increaseQuantity(index)}>+</button> -->
-                       <!-- </div> -->
-                      
+
+                    <!-- Ingredient Name -->
+                    <input
+                      class="pantry-name-input"
+                      type="text"
+                      bind:value={item.name}
+                      placeholder="Ingredient name"
+                    />
+
+                    <!-- Quantity Controls -->
+                    <div class="qty-controls">
+
+                      <button
+                        class="qty-btn"
+                        onclick={() => decreaseQuantity(item.id)}
+                      >
+                        −
+                      </button>
+
+                      <span class="pantry-row-qty">
+                        {item.quantity}
+                        {#if item.unit}
+                          {item.unit}
+                        {/if}
+                      </span>
+
+                      <button
+                        class="qty-btn"
+                        onclick={() => increaseQuantity(item.id)}
+                      >
+                        +
+                      </button>
+
                     </div>
-                    <button class="pantry-row-remove" onclick={() => removePantryItem(item.id)}>✕</button>
+
+                    <!-- Remove -->
+                    <button
+                      class="pantry-row-remove"
+                      onclick={() => removePantryItem(item.id)}
+                    >
+                      ✕
+                    </button>
+
                   </div>
+
                 {/each}
-                <!-- <button class="add-row-btn" onclick={addIngredientRow}>+ Add Ingredient</button> -->
+                
               </div>
             {/each}
           </div>
         {/if}
+        <button class="add-row-btn" onclick={addIngredientRow}>+ Add Ingredient</button>
 
         <div class="pantry-modal-footer">
           {#if pantryItems.length > 0}
             <button class="secondary-btn clear-all-btn" onclick={() => { clearPantry(); pantrySearch = ''; }}>Clear All</button>
+            <button class="save-btn" onclick={savePantryChanges}>
+              Save Changes
+            </button>
             <button class="analyze-btn find-btn" onclick={() => { showPantry = false; findRecipes(); }}>
               🍳 Find Recipes
             </button>
@@ -1236,6 +1326,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    margin-left: 5px;
   }
 
   .pantry-empty {
@@ -1274,5 +1365,88 @@
   .actions-section .analyze-btn {
     flex: 1;
     margin: 0;
+  }
+
+  .view-pantry-btn {
+    padding: 0.8rem 1rem;
+    border-radius: 14px;
+    border: none;
+    background: #22c55e;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    width: stretch;
+    margin-top: 10px;
+  }
+
+  .pantry-name-input {
+    flex: 1;
+
+    background: rgba(255,255,255,0.06);
+
+    border: 1px solid rgba(255,255,255,0.08);
+
+    color: white;
+
+    padding: 0.7rem 1rem;
+
+    border-radius: 12px;
+
+    outline: none;
+  }
+
+  .qty-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: 10px;
+  }
+
+  .qty-btn {
+    width: 28px;
+    height: 28px;
+
+    border: none;
+    border-radius: 8px;
+
+    background: rgba(255,255,255,0.08);
+
+    color: white;
+
+    cursor: pointer;
+  }
+
+  .add-row-btn {
+    width: 100%;
+
+    margin-top: 1rem;
+
+    padding: 0.9rem;
+
+    border-radius: 14px;
+
+    border: 1px dashed rgba(255,255,255,0.15);
+
+    background: transparent;
+
+    color: rgba(255,255,255,0.7);
+
+    cursor: pointer;
+  }
+
+  .save-btn {
+    border: none;
+
+    background: #22c55e;
+
+    color: white;
+
+    padding: 0 1.2rem;
+
+    border-radius: 14px;
+
+    font-weight: 600;
+
+    cursor: pointer;
   }
 </style>
