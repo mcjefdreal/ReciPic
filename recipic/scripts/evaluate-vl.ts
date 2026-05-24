@@ -4,8 +4,9 @@
  * Supports Roboflow COCO JSON export format:
  *   dataset/test/_annotations.coco.json + images/*.jpg
  *
- * Run:
- *   export $(grep -v '^#' .env | xargs) && npx tsx scripts/evaluate-vl.ts [dataset-dir] [--limit N] [--dry]
+ * Run from anywhere (auto-finds .env):
+ *   npx tsx scripts/evaluate-vl.ts ./eval_dataset --limit=50
+ *   npx tsx scripts/evaluate-vl.ts ./eval_dataset --dry
  *
  * Options:
  *   dataset-dir   Path to Roboflow dataset (default: ./eval_dataset)
@@ -14,14 +15,28 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+
+// Auto-load .env from multiple possible locations
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const envPaths = [
+  join(process.cwd(), '.env'),          // cwd
+  join(process.cwd(), 'recipic', '.env'), // workspace root
+  join(__dirname, '..', '.env'),         // script parent dir
+];
+for (const p of envPaths) {
+  if (existsSync(p)) { dotenv.config({ path: p }); break; }
+}
 
 // ── Config ──────────────────────────────────────────────────────────
 const VL_MODEL = 'qwen/qwen3-vl-30b-a3b-instruct';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const API_KEY = process.env.OPENROUTER_API_KEY!;
+const API_KEY = process.env.OPENROUTER_API_KEY;
 if (!API_KEY) {
-  console.error('Set OPENROUTER_API_KEY in .env');
+  console.error('OPENROUTER_API_KEY not found. Checked:', envPaths);
+  console.error('Ensure .env file exists with OPENROUTER_API_KEY=sk-or-v1-...');
   process.exit(1);
 }
 
