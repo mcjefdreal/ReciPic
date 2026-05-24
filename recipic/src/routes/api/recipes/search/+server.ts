@@ -76,12 +76,13 @@ async function rerankWithLLM(
     ingredients: string | null;
   }[],
 ): Promise<Array<{ id: number; name: string; score: number; reasoning: string }>> {
+  const candidateMap = new Map(candidates.map((c) => [c.id, c]));
   const candidateList = candidates
-    .map((c, i) => {
+    .map((c) => {
       const ingredients = c.ner
         ? JSON.parse(c.ner).join(', ')
         : c.ingredients || 'N/A';
-      return `${i + 1}. ${c.name} — Ingredients: ${ingredients}`;
+      return `ID: ${c.id} — ${c.name} — Ingredients: ${ingredients}`;
     })
     .join('\n');
 
@@ -93,11 +94,12 @@ ${candidateList}
 Task: Select the top recipes the user can actually make with their pantry.
 Score each by coverage (what % of recipe ingredients are in pantry).
 Return ONLY a JSON array of objects with these exact fields:
-- id (number, the recipe id from the list above)
+- id (number, MUST be the exact ID from the candidate list above, e.g. 3513)
 - name (string)
 - score (number 0-1, coverage ratio)
 - reasoning (string, e.g. "Missing: eggs, flour" or "All ingredients available")
 
+CRITICAL: Use the exact numeric ID from the candidate list. Do NOT invent or change IDs.
 Only include recipes with score > 0.2. Return at most ${RAG_MAX_RESULTS} recipes.
 Sort by score descending.`;
 
@@ -114,7 +116,7 @@ Sort by score descending.`;
       messages: [{ role: 'user', content: prompt }],
       temperature: 0,
       max_tokens: 1024,
-      provider: { order: ['Novita', 'DeepInfra', 'Fireworks', 'Hyperbolic'] },
+      provider: { order: ['alibaba','OpenRouter','Novita', 'DeepInfra', 'Fireworks', 'Hyperbolic'] },
     }),
   });
 
@@ -134,12 +136,23 @@ Sort by score descending.`;
         .filter(
           (r: any) => r.id && r.name && typeof r.score === 'number',
         )
-        .map((r: any) => ({
-          id: r.id,
-          name: r.name,
-          score: Math.min(1, Math.max(0, r.score)),
-          reasoning: r.reasoning || '',
-        }))
+        .map((r: any) => {
+          let id = Number(r.id);
+          // Fallback: if LLM hallucinated an ID, try to match by name
+          if (!candidateMap.has(id)) {
+            const byName = candidates.find(
+              (c) => c.name.toLowerCase().trim() === r.name.toLowerCase().trim(),
+            );
+            if (byName) id = byName.id;
+          }
+          return {
+            id,
+            name: r.name,
+            score: Math.min(1, Math.max(0, r.score)),
+            reasoning: r.reasoning || '',
+          };
+        })
+        .filter((r: any) => candidateMap.has(r.id))
         .sort((a: any, b: any) => b.score - a.score)
         .slice(0, RAG_MAX_RESULTS);
     }
@@ -177,15 +190,17 @@ export async function GET() {
 
   // 4. Fetch full recipe data for candidates
   const ids = vectorResults.map((r) => parseInt(r.metadata, 10));
+
   const candidates = sqlite
     .prepare(
-      `SELECT id, name, ner, ingredients, link FROM recipes WHERE id IN (${ids.join(',')})`,
+      `SELECT id, name, ner, ingredients, instructions, link FROM recipes WHERE id IN (${ids.join(',')})`,
     )
     .all() as {
     id: number;
     name: string;
     ner: string | null;
     ingredients: string | null;
+    instructions: string | null;
     link: string | null;
   }[];
 
@@ -194,14 +209,26 @@ export async function GET() {
 
   // 6. Build response
   const candidateMap = new Map(candidates.map((c) => [c.id, c]));
+
   const recipes = ranked.map((r) => {
-    const full = candidateMap.get(r.id);
+    const full = candidateMap.get(Number(r.id));
+    let ingredientCount = 0;
+    if (full?.ner) {
+      try {
+        ingredientCount = JSON.parse(full.ner).length;
+      } catch {
+        ingredientCount = (full.ingredients?.split(',').length) || 0;
+      }
+    } else if (full?.ingredients) {
+      ingredientCount = full.ingredients.split(',').length;
+    }
     return {
       id: r.id,
       name: r.name,
       description: null,
       ingredients: full?.ingredients || null,
-      instructions: null,
+      instructions: full?.instructions || null,
+      ingredientCount,
       link: full?.link || null,
       score: r.score,
       reasoning: r.reasoning,

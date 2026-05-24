@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import { OPENROUTER_API_KEY } from '$env/static/private';
 
 const OpenRouterAPIURL = 'https://openrouter.ai/api/v1/chat/completions';
-const Model = 'qwen/qwen3.6-flash';
+const Model = 'qwen/qwen3-vl-30b-a3b-thinking';
 
 function extractJSON(content: string): string {
     const start = content.indexOf('```json');
@@ -26,12 +26,7 @@ export async function POST({ request }) {
     if (!file) error(400, 'No image');
 
     const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = '';
-    const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-    }
-    const base64 = btoa(binary);
+    const base64 = Buffer.from(bytes).toString('base64');
     const dataURL = `data:${file.type};base64,${base64}`;
 
     const prompt = `List ingredients in this image. Use GENERAL names only (tomato, not roma tomato).
@@ -57,8 +52,11 @@ OUTPUT:
         ],
         temperature: 0,
         max_tokens: 256,
-        provider: { order: ['Novita', 'DeepInfra', 'Fireworks', 'Hyperbolic'] }
+        provider: { order: ['alibaba','Alibaba Cloud', 'OpenRouter'] }
     };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     const resp = await fetch(OpenRouterAPIURL, {
         method: 'POST',
@@ -68,8 +66,9 @@ OUTPUT:
             'HTTP-Referer': 'https://recipic.app',
             'X-Title': 'ReciPic'
         },
-        body: JSON.stringify(reqBody)
-    });
+        body: JSON.stringify(reqBody),
+        signal: controller.signal
+    }).finally(() => clearTimeout(timeout));
 
     const apiResp = await resp.json().catch(() => ({}));
     if (apiResp.error) error(502, apiResp.error.message || 'API error');

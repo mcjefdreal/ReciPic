@@ -21,11 +21,13 @@
         "dotenv": "^17.4.2",
         "drizzle-kit": "^0.31.10",
         "svelte": "^5.55.2",
+        "tsx": "^4.22.3",
         "vite": "^8.0.7"
     },
     "dependencies": {
         "better-sqlite3": "^12.9.0",
+        "csv-parse": "^6.2.1",
         "drizzle-orm": "^0.45.2",
-        "sqlite-vec": "^0.1.9"
+        "sqlite-vec": "0.1.10-alpha.4"
     }
 }
