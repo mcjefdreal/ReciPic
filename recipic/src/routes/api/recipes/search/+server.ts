@@ -186,27 +186,35 @@ Sort by score descending.`;
 
 // ── GET handler ─────────────────────────────────────────────────────
 export async function GET() {
+  const t0 = performance.now();
+
   // 1. Fetch pantry items
   const items = db.select().from(pantry).all();
   if (!items.length) {
-    return json({ recipes: [], pantry: [] });
+    return json({ recipes: [], pantry: [], timings: { total_ms: 0 } });
   }
 
   const pantryNames = items
     .map((i) => i.name.toLowerCase().trim())
     .filter(Boolean);
   if (!pantryNames.length) {
-    return json({ recipes: [], pantry: items });
+    return json({ recipes: [], pantry: items, timings: { total_ms: 0 } });
   }
 
   // 2. Generate query embedding from pantry items
+  const tEmbed = performance.now();
   const queryText = `recipes with: ${pantryNames.join(', ')}`;
   const queryEmbedding = await embedText(queryText);
+  const embedMs = Math.round(performance.now() - tEmbed);
 
   // 3. Vector similarity search
+  const tVec = performance.now();
   const vectorResults = vectorSearch(queryEmbedding, VECTOR_TOP_K);
+  const vecMs = Math.round(performance.now() - tVec);
+
   if (!vectorResults.length) {
-    return json({ recipes: [], pantry: items });
+    const totalMs = Math.round(performance.now() - t0);
+    return json({ recipes: [], pantry: items, timings: { embed_ms: embedMs, vec_ms: vecMs, total_ms: totalMs } });
   }
 
   // Build distance map: recipe ID → vector distance
@@ -234,7 +242,9 @@ export async function GET() {
   }[];
 
   // 5. RAG reranking
+  const tRank = performance.now();
   const ranked = await rerankWithLLM(pantryNames, candidates);
+  const rankMs = Math.round(performance.now() - tRank);
 
   // 6. Build response
   const candidateMap = new Map(candidates.map((c) => [c.id, c]));
@@ -279,5 +289,11 @@ export async function GET() {
     };
   });
 
-  return json({ recipes, pantry: items });
+  const totalMs = Math.round(performance.now() - t0);
+
+  return json({
+    recipes,
+    pantry: items,
+    timings: { embed_ms: embedMs, vec_ms: vecMs, rank_ms: rankMs, total_ms: totalMs }
+  });
 }

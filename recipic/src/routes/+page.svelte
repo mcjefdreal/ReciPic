@@ -13,9 +13,18 @@
   let detectedIngredients = $state<{ name: string; count: number }[]>([]);
 
   // Editable copy for the review modal
-  let editableIngredients = $state<{ name: string; count: number }[]>([]);
+  let editableIngredients = $state<{ name: string; count: number; bboxes?: { x: number; y: number; w: number; h: number }[] }[]>([]);
   let showIngredientModal = $state(false);
   let newIngredientName = $state('');
+
+  // BBox annotation state
+  let hoveredBBoxIdx = $state<number | null>(null);
+  let previewImgEl = $state<HTMLImageElement | null>(null);
+  let bboxCanvasEl = $state<HTMLCanvasElement | null>(null);
+
+  // Inference timing debug
+  let analyzeTimings = $state<{ vl_ms: number; refine_ms: number; total_ms: number } | null>(null);
+  let recipeTimings = $state<{ embed_ms: number; vec_ms: number; rank_ms: number; total_ms: number } | null>(null);
 
   // Pantry loaded from DB
   let pantryItems = $state<{ id: number; name: string; quantity: number; unit: string | null; category: string | null }[]>([]);
@@ -115,6 +124,9 @@
     analysisStep = 'idle';
     showIngredientModal = false;
     recipes = [];
+    hoveredBBoxIdx = null;
+    analyzeTimings = null;
+    recipeTimings = null;
 
     console.log(selectedImage);
   }
@@ -183,6 +195,9 @@
     analysisStep = 'idle';
     showIngredientModal = false;
     recipes = [];
+    hoveredBBoxIdx = null;
+    analyzeTimings = null;
+    recipeTimings = null;
 
     stopCamera();
   }
@@ -211,15 +226,18 @@
 
       const data = await res.json();
       detectedIngredients = data.ingredients || [];
+      analyzeTimings = data.timings || null;
 
       if (detectedIngredients.length > 0) {
-        // Deep-copy ingredients for editing — user can modify before saving
-        editableIngredients = detectedIngredients.map((ing: { name: string; count: number }) => ({
+        // Deep-copy ingredients for editing — preserve bboxes for annotation overlay
+        editableIngredients = detectedIngredients.map((ing: { name: string; count: number; bboxes?: { x: number; y: number; w: number; h: number }[] }) => ({
           name: ing.name,
-          count: ing.count || 1
+          count: ing.count || 1,
+          bboxes: ing.bboxes ? ing.bboxes.map(b => ({ ...b })) : undefined
         }));
         analysisStep = 'detected';
         showIngredientModal = true;
+        hoveredBBoxIdx = null;
       } else {
         analysisStep = 'idle';
       }
@@ -289,6 +307,147 @@
     analysisStep = 'idle';
   }
 
+  // Compute actual rendered image rectangle for object-fit modes
+  function getFitRect(
+    img: HTMLImageElement,
+    fit: 'cover' | 'contain'
+  ): { rw: number; rh: number; ox: number; oy: number } {
+    const { naturalWidth: nw, naturalHeight: nh, clientWidth: cw, clientHeight: ch } = img;
+    if (!nw || !nh || !cw || !ch) return { rw: 0, rh: 0, ox: 0, oy: 0 };
+
+    const natRatio = nw / nh;
+    const ctrRatio = cw / ch;
+    const wide = natRatio > ctrRatio;
+
+    if (fit === 'cover') {
+      // Fill container — overflow gets cropped
+      if (wide) {
+        const rh = ch;
+        return { rw: rh * natRatio, rh, ox: (cw - rh * natRatio) / 2, oy: 0 };
+      }
+      const rw = cw;
+      return { rw, rh: rw / natRatio, ox: 0, oy: (ch - rw / natRatio) / 2 };
+    }
+    // contain — full image visible, letterboxed
+    if (wide) {
+      const rw = cw;
+      return { rw, rh: rw / natRatio, ox: 0, oy: (ch - rw / natRatio) / 2 };
+    }
+    const rh = ch;
+    return { rw: rh * natRatio, rh, ox: (cw - rh * natRatio) / 2, oy: 0 };
+  }
+
+  // Draw bounding boxes on canvas overlay
+  function drawBBoxes(
+    canvas: HTMLCanvasElement,
+    img: HTMLImageElement,
+    ingredients: typeof editableIngredients,
+    highlightIdx: number | null,
+    fitMode: 'cover' | 'contain' = 'cover'
+  ) {
+    const ctx = canvas.getContext('2d');
+    if (!ctx || !img.naturalWidth || !img.naturalHeight) return;
+
+    // Canvas matches container size
+    const cw = img.clientWidth;
+    const ch = img.clientHeight;
+    canvas.width = cw;
+    canvas.height = ch;
+    ctx.clearRect(0, 0, cw, ch);
+
+    // Get the rendered image rect accounting for object-fit
+    const { rw, rh, ox, oy } = getFitRect(img, fitMode);
+    if (rw === 0 || rh === 0) return;
+
+    // Colors for different bboxes (cycling palette)
+    const colors = [
+      '#4ade80', '#f97316', '#38bdf8', '#facc15',
+      '#a78bfa', '#fb7185', '#2dd4bf', '#fbbf24',
+      '#818cf8', '#34d399', '#fb923c', '#e879f9'
+    ];
+
+    ingredients.forEach((ing, i) => {
+      const boxes = ing.bboxes;
+      if (!boxes || boxes.length === 0) return;
+
+      const color = colors[i % colors.length];
+      const isHovered = highlightIdx === i;
+
+      boxes.forEach((bbox, bi) => {
+        const { x, y, w, h } = bbox;
+
+        // Normalized [0,1] → pixels within the RENDERED image area + cover offset
+        const bx = x * rw + ox;
+        const by = y * rh + oy;
+        const bw = w * rw;
+        const bh = h * rh;
+
+        if (bw < 3 || bh < 3) return; // skip tiny boxes
+
+        // Fill
+        ctx.fillStyle = isHovered ? color + '50' : color + '20';
+        ctx.fillRect(bx, by, bw, bh);
+
+        // Border
+        ctx.strokeStyle = color + (isHovered ? 'ff' : 'aa');
+        ctx.lineWidth = isHovered ? 2 : 1;
+        ctx.strokeRect(bx, by, bw, bh);
+      });
+
+      // Only draw ONE label badge per ingredient type (first bbox as anchor)
+      const first = boxes[0];
+      const bx = first.x * rw + ox;
+      const by = first.y * rh + oy;
+      const bw = first.w * rw;
+
+      const fontSize = Math.max(10, Math.min(13, bw * 0.3));
+      ctx.font = `600 ${fontSize}px Inter, system-ui, sans-serif`;
+      const label = `${ing.name} (x${ing.count})`;
+      const textW = ctx.measureText(label).width + 10;
+
+      const labelAbove = by - 22 >= 0;
+      const labelY = labelAbove ? by - 4 : by + first.h * rh + 18;
+      const labelX = Math.max(0, Math.min(cw - textW, bx));
+
+      ctx.fillStyle = color + 'dd';
+      ctx.fillRect(labelX, labelY - 16, textW, 20);
+
+      ctx.fillStyle = '#000';
+      ctx.fillText(label, labelX + 5, labelY - 1);
+
+      // Hover: highlight number badge on first bbox
+      if (isHovered) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(bx + bw - 8, by + 8, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.font = '700 11px Inter, system-ui, sans-serif';
+        ctx.fillText(String(i + 1), bx + bw - 11, by + 12);
+      }
+    });
+  }
+
+  // Redraw bboxes whenever relevant state changes
+  $effect(() => {
+    if (bboxCanvasEl && previewImgEl) {
+      const fit = showIngredientModal ? 'contain' : 'cover';
+      requestAnimationFrame(() => {
+        drawBBoxes(bboxCanvasEl!, previewImgEl!, editableIngredients, hoveredBBoxIdx, fit);
+      });
+    }
+  });
+
+  // Trigger redraw after image loads (naturalWidth becomes available)
+  function onImageLoad() {
+    if (bboxCanvasEl && previewImgEl) {
+      const fit = showIngredientModal ? 'contain' : 'cover';
+      requestAnimationFrame(() => {
+        drawBBoxes(bboxCanvasEl!, previewImgEl!, editableIngredients, hoveredBBoxIdx, fit);
+      });
+    }
+  }
+
   async function findRecipes() {
     recipeLoading = true;
     recipes = [];
@@ -302,6 +461,7 @@
 
       const data = await res.json();
       recipes = data.recipes || [];
+      recipeTimings = data.timings || null;
     } catch (err: any) {
       console.error(err);
       alert(err.message || 'Failed to find recipes');
@@ -447,6 +607,7 @@
               analysisStep = 'idle';
               showIngredientModal = false;
               recipes = [];
+              hoveredBBoxIdx = null;
             }}
           >
             ✕
@@ -454,12 +615,20 @@
         </div>
 
         {#if selectedImage}
-          <div class="preview-container">
+          <div class="preview-container bbox-container">
             <img
               class="preview-image"
               src={selectedImage}
               alt="Selected ingredients"
+              bind:this={previewImgEl}
+              onload={onImageLoad}
             />
+            {#if editableIngredients.some(i => i.bboxes?.length)}
+              <canvas
+                class="bbox-canvas"
+                bind:this={bboxCanvasEl}
+              ></canvas>
+            {/if}
           </div>
         {/if}
 
@@ -538,7 +707,17 @@
     <section class="results">
       <div class="results-header">
         <h2>Suggested Recipes</h2>
-        <span>{recipes.length} found</span>
+        <div class="results-header-right">
+          {#if recipeTimings}
+            <div class="timing-bar timing-bar-compact">
+              <span class="timing-chip" title="Embedding generation">🧬 {recipeTimings.embed_ms}ms</span>
+              <span class="timing-chip" title="Vector search">🔍 {recipeTimings.vec_ms}ms</span>
+              <span class="timing-chip timing-rank" title="LLM re-rank">🤖 {recipeTimings.rank_ms}ms</span>
+              <span class="timing-chip timing-total">{recipeTimings.total_ms}ms</span>
+            </div>
+          {/if}
+          <span>{recipes.length} found</span>
+        </div>
       </div>
 
       <div class="recipe-list">
@@ -665,10 +844,35 @@
         <div class="ingredient-modal-header">
           <h2>Review Ingredients</h2>
           <p>Edit, add, or remove before saving to pantry</p>
+          {#if analyzeTimings}
+            <div class="timing-bar">
+              <span class="timing-chip">⏱ VL: {analyzeTimings.vl_ms}ms</span>
+              {#if analyzeTimings.refine_ms > 0}
+                <span class="timing-chip timing-refine">🔧 Refine: {analyzeTimings.refine_ms}ms</span>
+              {/if}
+              <span class="timing-chip timing-total">{analyzeTimings.total_ms}ms total</span>
+            </div>
+          {/if}
           <button class="modal-close" onclick={cancelIngredientEdit}>✕</button>
         </div>
 
         <div class="ingredient-modal-body">
+          {#if selectedImage && editableIngredients.some(i => i.bboxes?.length)}
+            <div class="modal-bbox-container bbox-container">
+              <img
+                class="modal-bbox-img"
+                src={selectedImage}
+                alt="Scanned ingredients"
+                bind:this={previewImgEl}
+                onload={onImageLoad}
+              />
+              <canvas
+                class="bbox-canvas modal-bbox-canvas"
+                bind:this={bboxCanvasEl}
+              ></canvas>
+            </div>
+          {/if}
+
           {#if editableIngredients.length === 0}
             <div class="ingredient-empty">
               <p>No ingredients to review.</p>
@@ -677,7 +881,15 @@
           {:else}
             <div class="ingredient-edit-list">
               {#each editableIngredients as ing, i}
-                <div class="ingredient-edit-row">
+                <div
+                  class="ingredient-edit-row"
+                  class:bbox-hovered={hoveredBBoxIdx === i}
+                  onmouseenter={() => hoveredBBoxIdx = ing.bboxes?.length ? i : null}
+                  onmouseleave={() => hoveredBBoxIdx = null}
+                >
+                  <span class="bbox-index-dot" style={ing.bboxes?.length ? `background:${['#4ade80','#f97316','#38bdf8','#facc15','#a78bfa','#fb7185','#2dd4bf','#fbbf24','#818cf8','#34d399','#fb923c','#e879f9'][i % 12]}` : ''}>
+                    {ing.bboxes?.length ? i + 1 : ''}
+                  </span>
                   <div class="ingredient-name-wrap">
                     <input
                       class="ingredient-name-input"
@@ -1926,5 +2138,138 @@
   .actions-section .analyze-btn {
     flex: 1;
     margin: 0;
+  }
+
+  /* ─── Inference Timing Debug ─── */
+
+  .timing-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+  }
+
+  .timing-chip {
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.45);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .timing-refine {
+    background: rgba(59,130,246,0.12);
+    color: rgba(147,197,253,0.8);
+  }
+
+  .timing-rank {
+    background: rgba(139,92,246,0.12);
+    color: rgba(196,167,252,0.8);
+  }
+
+  .timing-total {
+    background: rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.65);
+  }
+
+  .timing-bar-compact {
+    margin-top: 0;
+    justify-content: flex-end;
+  }
+
+  .results-header-right {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.3rem;
+  }
+
+  .results-header-right span {
+    font-size: 0.8rem;
+    color: rgba(255,255,255,0.5);
+  }
+
+  .bbox-container {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .bbox-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 5;
+  }
+
+  /* Modal image preview (compact) */
+  .modal-bbox-container {
+    max-height: 180px;
+    margin-bottom: 0.8rem;
+    border-radius: 16px;
+  }
+
+  .modal-bbox-img {
+    width: 100%;
+    max-height: 180px;
+    object-fit: contain;
+    display: block;
+  }
+
+  .modal-bbox-canvas {
+    max-height: 180px;
+  }
+
+  /* Ingredient row hover highlight */
+  .ingredient-edit-row {
+    transition: background 0.15s;
+    border-radius: 10px;
+    padding: 0.5rem 0.5rem;
+    margin: 0 -0.5rem;
+  }
+
+  .ingredient-edit-row.bbox-hovered {
+    background: rgba(255,255,255,0.06);
+  }
+
+  /* Color index dot */
+  .bbox-index-dot {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #000;
+    flex-shrink: 0;
+    opacity: 0.85;
+  }
+
+  .bbox-index-dot:empty {
+    opacity: 0.2;
+    background: rgba(255,255,255,0.1) !important;
+  }
+
+  /* Show a small "annotated" badge on the preview image */
+  .bbox-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.6);
+    color: #4ade80;
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    z-index: 10;
+    pointer-events: none;
+    font-weight: 600;
+    backdrop-filter: blur(6px);
   }
 </style>
