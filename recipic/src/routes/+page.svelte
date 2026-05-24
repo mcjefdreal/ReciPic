@@ -12,6 +12,11 @@
   // Detected ingredients from image analysis
   let detectedIngredients = $state<{ name: string; count: number }[]>([]);
 
+  // Editable copy for the review modal
+  let editableIngredients = $state<{ name: string; count: number }[]>([]);
+  let showIngredientModal = $state(false);
+  let newIngredientName = $state('');
+
   // Pantry loaded from DB
   let pantryItems = $state<{ id: number; name: string; quantity: number; unit: string | null; category: string | null }[]>([]);
 
@@ -56,6 +61,7 @@
       matches: string[];
       score?: number;
       reasoning?: string;
+      distance?: number | null;
     }[]
   >([]);
 
@@ -105,7 +111,9 @@
 
     // Reset analysis state on new image
     detectedIngredients = [];
+    editableIngredients = [];
     analysisStep = 'idle';
+    showIngredientModal = false;
     recipes = [];
 
     console.log(selectedImage);
@@ -171,7 +179,9 @@
 
     // Reset analysis state on new image
     detectedIngredients = [];
+    editableIngredients = [];
     analysisStep = 'idle';
+    showIngredientModal = false;
     recipes = [];
 
     stopCamera();
@@ -202,25 +212,14 @@
       const data = await res.json();
       detectedIngredients = data.ingredients || [];
 
-      // Save detected ingredients to pantry
       if (detectedIngredients.length > 0) {
-        const pantryRes = await fetch('/api/pantry', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            items: detectedIngredients.map((ing: { name: string; count: number }) => ({
-              name: ing.name,
-              quantity: ing.count || 1
-            }))
-          })
-        });
-
-        if (pantryRes.ok) {
-          await loadPantry();
-          analysisStep = 'saved';
-        } else {
-          throw new Error('Failed to save ingredients to pantry');
-        }
+        // Deep-copy ingredients for editing — user can modify before saving
+        editableIngredients = detectedIngredients.map((ing: { name: string; count: number }) => ({
+          name: ing.name,
+          count: ing.count || 1
+        }));
+        analysisStep = 'detected';
+        showIngredientModal = true;
       } else {
         analysisStep = 'idle';
       }
@@ -231,6 +230,63 @@
     } finally {
       loading = false;
     }
+  }
+
+  function updateIngredientCount(index: number, delta: number) {
+    const next = editableIngredients[index].count + delta;
+    if (next >= 1) editableIngredients[index].count = next;
+  }
+
+  function removeEditableIngredient(index: number) {
+    editableIngredients = editableIngredients.filter((_, i) => i !== index);
+  }
+
+  function addEditableIngredient() {
+    const name = newIngredientName.trim();
+    if (!name) return;
+    editableIngredients = [...editableIngredients, { name, count: 1 }];
+    newIngredientName = '';
+  }
+
+  async function confirmIngredients() {
+    if (editableIngredients.length === 0) {
+      showIngredientModal = false;
+      analysisStep = 'idle';
+      return;
+    }
+
+    loading = true;
+    try {
+      const pantryRes = await fetch('/api/pantry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: editableIngredients.map(ing => ({
+            name: ing.name,
+            quantity: ing.count
+          }))
+        })
+      });
+
+      if (pantryRes.ok) {
+        await loadPantry();
+        detectedIngredients = editableIngredients;
+        analysisStep = 'saved';
+        showIngredientModal = false;
+      } else {
+        throw new Error('Failed to save ingredients to pantry');
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || 'Failed to save ingredients');
+    } finally {
+      loading = false;
+    }
+  }
+
+  function cancelIngredientEdit() {
+    showIngredientModal = false;
+    analysisStep = 'idle';
   }
 
   async function findRecipes() {
@@ -289,6 +345,15 @@
 
   function toggleDetails(recipe: typeof recipes[number]) {
     expandedRecipe = expandedRecipe === recipe.id ? null : recipe.id;
+  }
+
+  let debugExpanded = $state<Set<number>>(new Set());
+
+  function toggleDebug(recipeId: number) {
+    const next = new Set(debugExpanded);
+    if (next.has(recipeId)) next.delete(recipeId);
+    else next.add(recipeId);
+    debugExpanded = next;
   }
 
   function openLink(link: string | null | undefined) {
@@ -378,7 +443,9 @@
               selectedImage = null;
               file = null;
               detectedIngredients = [];
+              editableIngredients = [];
               analysisStep = 'idle';
+              showIngredientModal = false;
               recipes = [];
             }}
           >
@@ -418,7 +485,7 @@
       </div>
 
       <!-- ANALYZE BUTTON -->
-      {#if analysisStep !== 'saved'}
+      {#if analysisStep !== 'saved' && analysisStep !== 'detected'}
         <button
           class="analyze-btn"
           onclick={analyzeIngredients}
@@ -434,7 +501,7 @@
       {/if}
 
       <!-- DETECTED INGREDIENTS -->
-      {#if detectedIngredients.length > 0 && analysisStep !== 'saved'}
+      {#if detectedIngredients.length > 0 && analysisStep === 'detected'}
         <div class="detected-section">
           <h4>Detected</h4>
           <div class="ingredients">
@@ -500,6 +567,14 @@
                     🔗
                   </button>
                 {/if}
+                <button
+                  class="debug-btn"
+                  class:debug-active={debugExpanded.has(recipe.id)}
+                  onclick={() => toggleDebug(recipe.id)}
+                  title="Debug ranking data"
+                >
+                  🐛
+                </button>
               </div>
 
               {#if recipe.reasoning}
@@ -540,6 +615,38 @@
                   {/if}
                 </div>
               {/if}
+
+              {#if debugExpanded.has(recipe.id)}
+                <div class="debug-panel">
+                  <h4>🐛 Debug: RAG Ranking</h4>
+                  <div class="debug-grid">
+                    <div class="debug-item">
+                      <span class="debug-label">LLM Score</span>
+                      <span class="debug-value">{recipe.score !== undefined ? Math.round(recipe.score * 100) + '%' : 'N/A'}</span>
+                    </div>
+                    <div class="debug-item">
+                      <span class="debug-label">Vector Distance</span>
+                      <span class="debug-value">{recipe.distance !== null && recipe.distance !== undefined ? recipe.distance.toFixed(4) : 'N/A'}</span>
+                    </div>
+                    <div class="debug-item">
+                      <span class="debug-label">Matched</span>
+                      <span class="debug-value">{recipe.matchCount} of {recipe.ingredientCount || '?'}</span>
+                    </div>
+                  </div>
+                  {#if recipe.reasoning}
+                    <div class="debug-item debug-wide">
+                      <span class="debug-label">LLM Reasoning</span>
+                      <span class="debug-value">{recipe.reasoning}</span>
+                    </div>
+                  {/if}
+                  {#if recipe.matches.length > 0}
+                    <div class="debug-item debug-wide">
+                      <span class="debug-label">Matching Ingredients</span>
+                      <span class="debug-value">{recipe.matches.join(', ')}</span>
+                    </div>
+                  {/if}
+                </div>
+              {/if}
             </div>
           </div>
         {/each}
@@ -549,6 +656,92 @@
     <section class="results empty">
       <p>No recipes match your pantry yet. Add more ingredients or import the recipe dataset.</p>
     </section>
+  {/if}
+
+  <!-- Ingredient Edit Modal -->
+  {#if showIngredientModal}
+    <div class="ingredient-modal">
+      <div class="ingredient-modal-content">
+        <div class="ingredient-modal-header">
+          <h2>Review Ingredients</h2>
+          <p>Edit, add, or remove before saving to pantry</p>
+          <button class="modal-close" onclick={cancelIngredientEdit}>✕</button>
+        </div>
+
+        <div class="ingredient-modal-body">
+          {#if editableIngredients.length === 0}
+            <div class="ingredient-empty">
+              <p>No ingredients to review.</p>
+              <p>Add one below or cancel.</p>
+            </div>
+          {:else}
+            <div class="ingredient-edit-list">
+              {#each editableIngredients as ing, i}
+                <div class="ingredient-edit-row">
+                  <div class="ingredient-name-wrap">
+                    <input
+                      class="ingredient-name-input"
+                      type="text"
+                      bind:value={editableIngredients[i].name}
+                    />
+                  </div>
+                  <div class="ingredient-qty-wrap">
+                    <button
+                      class="qty-btn"
+                      onclick={() => updateIngredientCount(i, -1)}
+                      disabled={ing.count <= 1}
+                    >−</button>
+                    <span class="qty-value">{ing.count}</span>
+                    <button
+                      class="qty-btn"
+                      onclick={() => updateIngredientCount(i, 1)}
+                    >+</button>
+                  </div>
+                  <button
+                    class="ingredient-remove-btn"
+                    onclick={() => removeEditableIngredient(i)}
+                    title="Remove"
+                  >✕</button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="ingredient-add-row">
+            <input
+              class="ingredient-add-input"
+              type="text"
+              placeholder="Add another ingredient..."
+              bind:value={newIngredientName}
+              onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addEditableIngredient(); } }}
+            />
+            <button
+              class="ingredient-add-btn"
+              onclick={addEditableIngredient}
+              disabled={!newIngredientName.trim()}
+            >+ Add</button>
+          </div>
+        </div>
+
+        <div class="ingredient-modal-footer">
+          <button class="secondary-btn cancel-btn" onclick={cancelIngredientEdit}>
+            Cancel
+          </button>
+          <button
+            class="analyze-btn save-btn"
+            onclick={confirmIngredients}
+            disabled={editableIngredients.length === 0 || loading}
+          >
+            {#if loading}
+              <div class="spinner"></div>
+              Saving...
+            {:else}
+              ✅ Add to Pantry
+            {/if}
+          </button>
+        </div>
+      </div>
+    </div>
   {/if}
 
   <!-- Camera Modal -->
@@ -676,6 +869,14 @@
                       {#if recipe.link}
                         <button class="link-btn" onclick={() => openLink(recipe.link)} title="Open recipe source">🔗</button>
                       {/if}
+                      <button
+                        class="debug-btn"
+                        class:debug-active={debugExpanded.has(recipe.id)}
+                        onclick={() => toggleDebug(recipe.id)}
+                        title="Debug ranking data"
+                      >
+                        🐛
+                      </button>
                     </div>
                     {#if recipe.reasoning}
                       <p class="recipe-reasoning">{recipe.reasoning}</p>
@@ -696,6 +897,38 @@
                           <p class="recipe-desc">{recipe.instructions}</p>
                         {:else}
                           <p class="recipe-desc">No instructions listed.</p>
+                        {/if}
+                      </div>
+                    {/if}
+
+                    {#if debugExpanded.has(recipe.id)}
+                      <div class="debug-panel">
+                        <h4>🐛 Debug: RAG Ranking</h4>
+                        <div class="debug-grid">
+                          <div class="debug-item">
+                            <span class="debug-label">LLM Score</span>
+                            <span class="debug-value">{recipe.score !== undefined ? Math.round(recipe.score * 100) + '%' : 'N/A'}</span>
+                          </div>
+                          <div class="debug-item">
+                            <span class="debug-label">Vector Distance</span>
+                            <span class="debug-value">{recipe.distance !== null && recipe.distance !== undefined ? recipe.distance.toFixed(4) : 'N/A'}</span>
+                          </div>
+                          <div class="debug-item">
+                            <span class="debug-label">Matched</span>
+                            <span class="debug-value">{recipe.matchCount} of {recipe.ingredientCount || '?'}</span>
+                          </div>
+                        </div>
+                        {#if recipe.reasoning}
+                          <div class="debug-item debug-wide">
+                            <span class="debug-label">LLM Reasoning</span>
+                            <span class="debug-value">{recipe.reasoning}</span>
+                          </div>
+                        {/if}
+                        {#if recipe.matches.length > 0}
+                          <div class="debug-item debug-wide">
+                            <span class="debug-label">Matching Ingredients</span>
+                            <span class="debug-value">{recipe.matches.join(', ')}</span>
+                          </div>
                         {/if}
                       </div>
                     {/if}
@@ -978,6 +1211,11 @@
     color: white;
   }
 
+  .save-btn {
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+    color: white;
+  }
+
   .spinner {
     width: 18px;
     height: 18px;
@@ -987,7 +1225,8 @@
     animation: spin 0.8s linear infinite;
   }
 
-  .find-btn .spinner {
+  .find-btn .spinner,
+  .save-btn .spinner {
     border: 2px solid rgba(255,255,255,0.3);
     border-top: 2px solid white;
   }
@@ -1134,6 +1373,317 @@
     margin: 0.5rem 0 0.3rem;
     font-size: 0.85rem;
     color: rgba(255,255,255,0.5);
+  }
+
+  .debug-btn {
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.05);
+    color: white;
+    cursor: pointer;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    flex-shrink: 0;
+  }
+
+  .debug-btn:hover,
+  .debug-active {
+    background: rgba(250,204,21,0.15);
+    border-color: rgba(250,204,21,0.3);
+    color: #facc15;
+  }
+
+  .debug-panel {
+    margin-top: 0.8rem;
+    padding: 0.8rem;
+    border: 1px solid rgba(250,204,21,0.15);
+    border-radius: 14px;
+    background: rgba(250,204,21,0.04);
+  }
+
+  .debug-panel h4 {
+    margin: 0 0 0.6rem;
+    font-size: 0.75rem;
+    color: rgba(250,204,21,0.6);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .debug-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .debug-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+
+  .debug-wide {
+    grid-column: 1 / -1;
+    margin-top: 0.3rem;
+  }
+
+  .debug-label {
+    font-size: 0.65rem;
+    color: rgba(255,255,255,0.35);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .debug-value {
+    font-size: 0.8rem;
+    color: rgba(255,255,255,0.7);
+    word-break: break-word;
+  }
+
+  /* INGREDIENT EDIT MODAL */
+
+  .ingredient-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 1000;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    opacity: 0;
+    animation: fadeIn 0.2s ease forwards;
+  }
+
+  @keyframes fadeIn {
+    to { opacity: 1; }
+  }
+
+  .ingredient-modal-content {
+    background: #1a1f2e;
+    border-radius: 28px 28px 0 0;
+    width: 100%;
+    max-width: 500px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: slideUp 0.3s ease forwards;
+  }
+
+  @keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+
+  .ingredient-modal-header {
+    padding: 1.5rem 1.2rem 0.5rem;
+    position: relative;
+  }
+
+  .ingredient-modal-header h2 {
+    margin: 0;
+    font-size: 1.3rem;
+  }
+
+  .ingredient-modal-header p {
+    margin: 0.3rem 0 0;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.85rem;
+  }
+
+  .ingredient-modal-header .modal-close {
+    position: absolute;
+    top: 1.2rem;
+    right: 1.2rem;
+  }
+
+  .ingredient-modal-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 1.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .ingredient-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: rgba(255,255,255,0.5);
+  }
+
+  .ingredient-empty p {
+    margin: 0.3rem 0;
+  }
+
+  .ingredient-edit-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .ingredient-edit-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+
+  .ingredient-name-wrap {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .ingredient-name-input {
+    width: 100%;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.06);
+    color: white;
+    font-size: 0.95rem;
+    outline: none;
+    text-transform: capitalize;
+    box-sizing: border-box;
+    transition: border-color 0.2s;
+  }
+
+  .ingredient-name-input:focus {
+    border-color: rgba(74,222,128,0.5);
+  }
+
+  .ingredient-qty-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+  }
+
+  .qty-btn {
+    width: 32px;
+    height: 32px;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.06);
+    color: white;
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+  }
+
+  .qty-btn:hover:not(:disabled) {
+    background: rgba(255,255,255,0.12);
+  }
+
+  .qty-btn:disabled {
+    opacity: 0.3;
+    cursor: default;
+  }
+
+  .qty-value {
+    min-width: 24px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
+  .ingredient-remove-btn {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 10px;
+    background: rgba(239,68,68,0.15);
+    color: #fca5a5;
+    cursor: pointer;
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s;
+  }
+
+  .ingredient-remove-btn:hover {
+    background: rgba(239,68,68,0.3);
+  }
+
+  .ingredient-add-row {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.8rem 0;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    margin-top: 0.4rem;
+  }
+
+  .ingredient-add-input {
+    flex: 1;
+    padding: 0.6rem 0.8rem;
+    border: 1px dashed rgba(255,255,255,0.15);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.04);
+    color: white;
+    font-size: 0.9rem;
+    outline: none;
+    box-sizing: border-box;
+    transition: border-color 0.2s;
+  }
+
+  .ingredient-add-input:focus {
+    border-color: rgba(74,222,128,0.5);
+    border-style: solid;
+  }
+
+  .ingredient-add-input::placeholder {
+    color: rgba(255,255,255,0.3);
+  }
+
+  .ingredient-add-btn {
+    padding: 0.6rem 1rem;
+    border: none;
+    border-radius: 12px;
+    background: rgba(74,222,128,0.15);
+    color: #86efac;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+
+  .ingredient-add-btn:hover:not(:disabled) {
+    background: rgba(74,222,128,0.25);
+  }
+
+  .ingredient-add-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .ingredient-modal-footer {
+    display: flex;
+    gap: 0.8rem;
+    padding: 1rem 1.2rem 1.5rem;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .ingredient-modal-footer .cancel-btn {
+    flex-shrink: 0;
+  }
+
+  .ingredient-modal-footer .save-btn {
+    flex: 1;
+    margin: 0;
   }
 
   /* CAMERA MODAL */

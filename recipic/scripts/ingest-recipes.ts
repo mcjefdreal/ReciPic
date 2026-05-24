@@ -60,6 +60,26 @@ async function embedTexts(texts: string[]): Promise<number[][]> {
   return results.map((r: any) => r.embedding);
 }
 
+// ── Retry wrapper with exponential backoff ───────────────────────────
+async function embedTextsWithRetry(
+  texts: string[],
+  maxRetries = 3,
+): Promise<number[][]> {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await embedTexts(texts);
+    } catch (err: any) {
+      if (attempt === maxRetries) throw err;
+      const delay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.error(
+        `    Embedding attempt ${attempt}/${maxRetries} failed: ${err.message}. Retrying in ${delay / 1000}s...`,
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error("unreachable");
+}
+
 // ── DB setup ────────────────────────────────────────────────────────
 const db = new Database(DB_PATH);
 sqliteVec.load(db);
@@ -167,19 +187,24 @@ async function main() {
         `  Generating embeddings for batch ${Math.ceil(count / BATCH_SIZE)}...`,
       );
 
-      let embeddings: number[][];
       try {
-        embeddings = await embedTexts(embeddingTexts);
+        const embeddings = await embedTextsWithRetry(embeddingTexts);
+        const embeddingBatch = embeddings.map((emb, i) => ({
+          recipe_id: startId + i,
+          embedding: emb,
+        }));
+        insertEmbeddingBatch(embeddingBatch);
       } catch (err: any) {
-        console.error(`  Batch embedding failed: ${err.message}`);
-        embeddings = embeddingTexts.map(() => new Array(EMBEDDING_DIM).fill(0));
+        console.error(
+          `  Batch ${Math.ceil(count / BATCH_SIZE)} embedding FAILED after retries: ${err.message}`,
+        );
+        console.error(
+          `  Skipping embeddings for recipe IDs ${startId}–${startId + BATCH_SIZE - 1}. Recipes inserted but NOT vector-searchable. Re-run with a targeted fix script to backfill.`,
+        );
+        // NOTE: recipes already committed via insertRecipeBatch above.
+        // Do NOT insert zero-vectors — that silently corrupts the index.
+        // Missing embeddings are recoverable; poisoned vectors are not.
       }
-
-      const embeddingBatch = embeddings.map((emb, i) => ({
-        recipe_id: startId + i,
-        embedding: emb,
-      }));
-      insertEmbeddingBatch(embeddingBatch);
 
       recipeBatch = [];
       embeddingTexts = [];
@@ -200,19 +225,21 @@ async function main() {
 
     console.log(`  Generating embeddings for final batch...`);
 
-    let embeddings: number[][];
     try {
-      embeddings = await embedTexts(embeddingTexts);
+      const embeddings = await embedTextsWithRetry(embeddingTexts);
+      const embeddingBatch = embeddings.map((emb, i) => ({
+        recipe_id: startId + i,
+        embedding: emb,
+      }));
+      insertEmbeddingBatch(embeddingBatch);
     } catch (err: any) {
-      console.error(`  Final batch embedding failed: ${err.message}`);
-      embeddings = embeddingTexts.map(() => new Array(EMBEDDING_DIM).fill(0));
+      console.error(
+        `  Final batch embedding FAILED after retries: ${err.message}`,
+      );
+      console.error(
+        `  Skipping embeddings for recipe IDs ${startId}–${startId + recipeBatch.length - 1}. Recipes inserted but NOT vector-searchable. Re-run with a targeted fix script to backfill.`,
+      );
     }
-
-    const embeddingBatch = embeddings.map((emb, i) => ({
-      recipe_id: startId + i,
-      embedding: emb,
-    }));
-    insertEmbeddingBatch(embeddingBatch);
   }
 
   // Stats

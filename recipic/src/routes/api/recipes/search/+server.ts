@@ -6,8 +6,15 @@ import { OPENROUTER_API_KEY } from '$env/static/private';
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1';
 const EMBEDDING_MODEL = 'perplexity/pplx-embed-v1-4b'; // 2560-dim
 const CHAT_MODEL = 'qwen/qwen3.6-flash';
-const VECTOR_TOP_K = 40;
-const RAG_MAX_RESULTS = 10;
+const VECTOR_TOP_K = 20;
+const RAG_MAX_RESULTS = 5;
+const EMBED_TIMEOUT_MS = 25_000;
+const RERANK_TIMEOUT_MS = 20_000;
+
+// ── Embedding cache ──────────────────────────────────────────────────
+// Key: queryText (deterministic from pantry). Self-invalidating — pantry
+// change → queryText change → cache miss. Persists for process lifetime.
+const embeddingCache = new Map<string, Float32Array>();
 
 // ── JSON extraction helper ──────────────────────────────────────────
 function extractJSON(content: string): string {
@@ -26,8 +33,14 @@ function extractJSON(content: string): string {
   return content.trim();
 }
 
-// ── Generate embedding via OpenRouter ───────────────────────────────
+// ── Generate embedding via OpenRouter (cached + timeout) ────────────
 async function embedText(text: string): Promise<Float32Array> {
+  const cached = embeddingCache.get(text);
+  if (cached) return cached;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
+
   const resp = await fetch(`${OPENROUTER_URL}/embeddings`, {
     method: 'POST',
     headers: {
@@ -40,7 +53,8 @@ async function embedText(text: string): Promise<Float32Array> {
       model: EMBEDDING_MODEL,
       input: text.slice(0, 8000),
     }),
-  });
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
 
   if (!resp.ok) {
     const err = await resp.text();
@@ -50,7 +64,10 @@ async function embedText(text: string): Promise<Float32Array> {
   const data = await resp.json();
   const embedding = data.data?.[0]?.embedding;
   if (!embedding) throw new Error('No embedding returned from API');
-  return new Float32Array(embedding);
+
+  const vec = new Float32Array(embedding);
+  embeddingCache.set(text, vec);
+  return vec;
 }
 
 // ── Vector similarity search ────────────────────────────────────────
@@ -103,6 +120,9 @@ CRITICAL: Use the exact numeric ID from the candidate list. Do NOT invent or cha
 Only include recipes with score > 0.2. Return at most ${RAG_MAX_RESULTS} recipes.
 Sort by score descending.`;
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RERANK_TIMEOUT_MS);
+
   const resp = await fetch(`${OPENROUTER_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -118,7 +138,8 @@ Sort by score descending.`;
       max_tokens: 1024,
       provider: { order: ['alibaba','OpenRouter','Novita', 'DeepInfra', 'Fireworks', 'Hyperbolic'] },
     }),
-  });
+    signal: controller.signal,
+  }).finally(() => clearTimeout(timeout));
 
   const data = await resp.json().catch(() => ({}));
   if (data.error || !data.choices?.length) {
@@ -188,14 +209,22 @@ export async function GET() {
     return json({ recipes: [], pantry: items });
   }
 
+  // Build distance map: recipe ID → vector distance
+  const distanceMap = new Map<number, number>();
+  for (const r of vectorResults) {
+    const id = parseInt(r.metadata, 10);
+    if (!isNaN(id)) distanceMap.set(id, r.distance);
+  }
+
   // 4. Fetch full recipe data for candidates
   const ids = vectorResults.map((r) => parseInt(r.metadata, 10));
 
+  const placeholders = ids.map(() => '?').join(',');
   const candidates = sqlite
     .prepare(
-      `SELECT id, name, ner, ingredients, instructions, link FROM recipes WHERE id IN (${ids.join(',')})`,
+      `SELECT id, name, ner, ingredients, instructions, link FROM recipes WHERE id IN (${placeholders})`,
     )
-    .all() as {
+    .all(...ids) as {
     id: number;
     name: string;
     ner: string | null;
@@ -209,19 +238,31 @@ export async function GET() {
 
   // 6. Build response
   const candidateMap = new Map(candidates.map((c) => [c.id, c]));
+  const pantrySet = new Set(pantryNames);
 
   const recipes = ranked.map((r) => {
     const full = candidateMap.get(Number(r.id));
     let ingredientCount = 0;
+    let recipeNer: string[] = [];
+
     if (full?.ner) {
       try {
-        ingredientCount = JSON.parse(full.ner).length;
+        recipeNer = JSON.parse(full.ner);
+        ingredientCount = recipeNer.length;
       } catch {
-        ingredientCount = (full.ingredients?.split(',').length) || 0;
+        recipeNer = (full.ingredients?.split(',').map((s) => s.trim())) || [];
+        ingredientCount = recipeNer.length;
       }
     } else if (full?.ingredients) {
-      ingredientCount = full.ingredients.split(',').length;
+      recipeNer = full.ingredients.split(',').map((s) => s.trim());
+      ingredientCount = recipeNer.length;
     }
+
+    // Compute real ingredient matches: pantry ∩ recipe NER
+    const matches = recipeNer
+      .filter((ing) => pantrySet.has(ing.toLowerCase().trim()))
+      .map((ing) => ing.trim());
+
     return {
       id: r.id,
       name: r.name,
@@ -232,8 +273,9 @@ export async function GET() {
       link: full?.link || null,
       score: r.score,
       reasoning: r.reasoning,
-      matchCount: Math.round(r.score * 10),
-      matches: [],
+      matchCount: matches.length,
+      matches,
+      distance: distanceMap.get(Number(r.id)) ?? null,
     };
   });
 
